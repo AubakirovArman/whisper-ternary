@@ -1,4 +1,4 @@
-# Whisper at 1.58 bits: it got more accurate — and here is everything that broke on the way
+# I took 82 % of Whisper's weights ternary. WER improved — and the model forgot how to use commas
 
 Ternarisation is usually discussed in the context of large language models:
 BitNet, b1.58, billions of parameters. The logic is clear — that is where
@@ -17,26 +17,57 @@ got in my own way, and how I caught it.
 Code and weights are open, links at the end. If you spot a mistake, tell me —
 this is my first time doing this.
 
-**On "1.58 bits":** that is log₂(3), the information content of a ternary
-alphabet, and it is the name BitNet gave the idea. My actual storage is
-**2.125 bits per weight** — two bits per code plus one fp16 scale per 128
-weights. BitNet's real files are the same way. I use the recognisable term and
-give you the honest number in the same breath.
+**On "1.58 bits":** that is what BitNet named the idea — log₂(3), the capacity of
+a ternary alphabet. But the result has four different figures and they must not
+be conflated:
+
+| | |
+|---|---|
+| capacity of three states, log₂3 | 1.585 bit/weight |
+| training layout: 2-bit code + fp16 scale per 128 | **2.125 bpw** |
+| the shipped file, ggml `Q2_0`, fp16 scale per 64 | **2.25 bpw** |
+| the whole 140 MiB file over all parameters | **≈4.87 bit/param** |
+
+The last row is higher because 18 % of the parameters — the tied embedding head
+— plus convolutions, norms and biases stay in fp16. Of the 140 MiB, **53 MiB is
+the ternary matrices and 87 MiB is everything else.**
+
+The runtime is a hybrid too, deliberately: the encoder is expanded `Q2_0 → Q8_0`
+at load (exactly — ternary codes and the same fp16 scale are representable in
+Q8_0) because it is compute-bound, while the decoder stays 2-bit. So **the
+encoder is mathematically ternary and physically 8-bit while running.** Saying
+"the model runs at two bits" would be wrong.
 
 ---
 
 ## What came out
 
-**192 weight matrices of whisper-small contain only −1, 0 and +1. The model is
-more accurate than the fp16 version it was distilled from.**
+**192 weight matrices of whisper-small contain only −1, 0 and +1.**
 
 | LibriSpeech, greedy decoding | ternary | stock whisper-small |
 |---|---|---|
-| test-clean | **2.7145 %** WER | 3.3391 % |
-| test-other | **7.3817 %** WER | 7.5002 % |
+| normalised WER, test-clean | **2.7145 %** | 3.3391 % |
+| normalised WER, test-other | **7.3817 %** | 7.5002 % |
 | long-form, 9 recordings | **3.632 %** | 3.891 % |
+| utterances with a comma | 0.0–0.7 % | 63.3 % |
+| utterances with a capital | 2 % | 98 % |
 
-Both test sets are genuinely held out — neither was used in training.
+**Two caveats belong here, not further down.**
+
+*This compares against stock whisper-small.* A matched fp16 control — same code
+path, same data, same schedule, quantisation switched off — is still **≈0.37 pp
+better** than the ternary branch, and both curves were still descending when the
+runs ended. The model beats the teacher it was distilled from; that is **not the
+same claim** as "ternarisation improved the model".
+
+*The WER is normalised* — case and punctuation are stripped before scoring. So a
+model can score better while producing worse text for a human. That is precisely
+what happened here.
+
+`test-clean` and `test-other` took no part in gradient training. But across the
+project they were measured 21 times over four runs, and the final checkpoint was
+chosen over its own step-7500 sibling by looking at them — **that makes them a
+selection suite, not a sealed test.**
 
 198,180,864 weights, 82 % of the model, **carry no magnitude at all**: each is
 one of three values, plus one fp16 scale per 128 inputs. The runnable file is
@@ -121,11 +152,15 @@ projection, so for export you re-project from the latent weights.
 **Result: 1000.56 % WER.**
 
 Diagnostics showed the latent weights had drifted to 3.8× the median, and 60 %
-were saturated. They had long since stopped being weights and become a gradient
-accumulator. **The latent weight is a scratchpad, not a master copy. The master
-is the trained (codes, scales) pair** — the thing that was actually optimised.
+were saturated.
 
-I suspect most people who write their own QAT and export walk into this one.
+An important qualification: **this is a property of my design, not of QAT in
+general.** In classical QAT the high-precision master weights genuinely are the
+source the quantised checkpoint is rebuilt from. Here they are not — the group
+scales are separately learned parameters, so re-projecting from the latent tensor
+recomputes scales that were never trained, and the latent tensor itself is only a
+gradient surrogate, free to drift outside its quantisation cells. The deployment
+representation was the trained (codes, scales) pair from the start.
 
 ---
 
@@ -141,9 +176,12 @@ lines above. The real cause was duller and more important: nondeterminism in
 batched matrix multiplication. Batch 16 gives 3.4298 %, batch 8 gives 3.4224 %,
 batch 1 gives 3.4168 % — on identical code.
 
-That mistake produced something useful: a **harness noise floor of ±0.013 pp.**
-Anything under 0.02 pp is not signal. Before that I was seriously discussing
-differences in the third decimal.
+That mistake produced something useful: moving from batch 1 to batch 16 shifts
+WER by **0.013 pp on identical code.** Strictly this is not random noise but
+systematic implementation sensitivity — reduction order, GEMM kernel selection,
+floating-point accumulation. So batch size is pinned and I do not treat
+differences under 0.02 pp as signal without a separate paired test. Before that I
+was seriously discussing the third decimal.
 
 **"The artefact is symmetric."** I measured one side of an effect, got 1.36 pp,
 and declared the other side the same. The other side was 4.02 pp. A headline
@@ -186,8 +224,11 @@ for ternary codes. Lucky, it seemed. Except:
   slower than fp16;
 - quantising the original model into that type produced pure garbage.
 
-The type had been declared and **never once run end to end.** I wrote the missing
-AVX2 kernel (encoder 12.5 s → 2.4 s per window) and removed the two gates.
+In the upstream revision I pinned, the type was declared but the Whisper
+quantise path explicitly rejected it and x86 fell back to a generic scalar
+kernel — so **for Whisper this path was not in a working end-to-end state.** I
+claim nothing about the whole ecosystem's history. I wrote the missing AVX2
+kernel (encoder 12.5 s → 2.4 s per window) and removed the two gates.
 
 **Another of my own mistakes, and a galling one.** The first build produced
 "almost right but disfigured" text: the opening words correct, then decay. The
@@ -201,8 +242,12 @@ output projection. That is 18 % of the parameters and 86 of the 140 MiB — by f
 the largest thing still in fp16. So I quantised it too.
 
 **WER: 2.71 % → 1152 %.** Not degradation, total collapse: 563,054 spurious
-insertions. That tensor was never trained under quantisation and does not
-survive two bits. Now I have a number instead of a hunch.
+insertions.
+
+But the claim has to be narrow: this proves **that one-shot projection, with no
+dedicated QAT, fails on that tensor.** It does not prove the head is
+incompressible. It occupies 86 of the 140 MiB, and a learned Q4 head would
+plausibly bring the file to ~78 MiB — the most promising direction from here.
 
 ---
 
@@ -210,18 +255,33 @@ survive two bits. Now I have a number instead of a hunch.
 
 Same weights, same audio, batch 1:
 
+**The clean comparison is CPU against CPU** — one machine, one runtime, one
+binary, only the weights differ:
+
+| 66 s of audio, 16 threads | fp16 | ternary Q2_0 |
+|---|---|---|
+| encoder / 30 s window | 578 ms | **473 ms** |
+| decode / step | 6.8 ms | **6.0 ms** |
+| file | 465 MiB | **140 MiB** |
+
+The H200 comparison is an illustration rather than a hardware benchmark — it
+varies hardware *and* runtime at once (hand-written C/AVX2 against PyTorch):
+
 | | H200, PyTorch fp16 | CPU, ternary |
 |---|---|---|
-| decode / token | 8.3 ms | **6.0 ms** |
 | encoder / 30 s window | 7.1 ms | 550 ms |
+| decode / token | 8.3 ms | **6.0 ms** |
+| **end to end (excl. load)** | **1.17 s** | 2.7 s |
 
-The decoder is faster on the CPU than on an H200. This is not a story about CPUs
-being secretly great — it is about what autoregressive decoding at batch 1
-actually is: **439 kernel launches per decoder pass, roughly 15 µs each,
-regardless of matrix size.** The card spends its time launching, not computing.
+A single decoder step is faster on the CPU, because at batch 1 the GPU is bound
+not by arithmetic but by launches: **439 kernel launches per decoder pass,
+roughly 15 µs each, regardless of matrix size.**
 
-The encoder tells the opposite story: a dense matmul over 1500 frames is exactly
-what GPUs exist for, and there the H200 wins by 77×.
+**But end to end the H200 still wins by 2.3×.** For a 2.3 ms per-token advantage
+to repay a 543 ms encoder deficit you would need about **236 decoded tokens per
+30-second window** — far more than ordinary speech produces. The encoder is a
+dense matmul over 1500 frames, exactly what GPUs exist for, and there the gap is
+77×.
 
 The lesson generalises past this model: **before optimising a kernel, find out
 what you are bound by** — compute, memory, or launches. I spent time optimising
@@ -234,7 +294,8 @@ something that was not the bottleneck.
 A compression result with no failure list means nobody looked hard enough. Mine:
 
 - **No punctuation.** Commas appear in 0.0–0.7 % of utterances depending on
-  decoding mode; stock whisper-small manages 63.3 %. Capitals: 2 % against 98 %.
+  decoding mode; stock whisper-small manages 63.3 %. Measured on 300 utterances,
+  not the full corpus. Capitals: 2 % against 98 %.
   The cause is my labels, lowercased and stripped of punctuation. I have already
   built the punctuated data and have not yet run the training.
 - **English only.** Russian degrades 12.6×. But an fp16 control trained the same
