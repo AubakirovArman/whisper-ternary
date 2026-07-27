@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+cache/
+results/qat/
+*.pt
+*.bin
+*.npy
+wal_tat/src/*.egg-info/

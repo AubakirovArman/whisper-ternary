@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wal-tat"
+version = "0.1.0"
+description = "Transactional adaptive ternarization with causal scoring and write-ahead logging"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+experiment = [
+    "transformers>=4.51",
+    "datasets>=2.18",
+    "soundfile>=0.12",
+    "pyarrow>=14",
+    "huggingface-hub>=0.23",
+    "numpy>=1.24",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
