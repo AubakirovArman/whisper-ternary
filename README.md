@@ -75,8 +75,8 @@ frames, is exactly what a GPU is for, and there the H200 wins by 77×.
 Named plainly, because a quantisation result with no failure list has not been
 looked at hard enough.
 
-- **No punctuation.** 0.0 % of utterances contain a comma; stock whisper-small
-  manages 63.3 %. Capitals appear in 2 %, against 98 %. In timestamp mode a
+- **No punctuation.** 0.0–0.7 % of utterances contain a comma depending on mode; stock
+  whisper-small manages 63.3 %. Capitals appear in 2 %, against 98 %. In timestamp mode a
   sentence-final period survives on 15 % of utterances — that is residue from
   the original model, not learned punctuation. Measured on 300 utterances,
   [`results/diagnostics/punctuation_mode_switch.json`](results/diagnostics/punctuation_mode_switch.json).

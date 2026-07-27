@@ -89,8 +89,8 @@ offered upstream.
 A compression result without a failure list hasn't been looked at hard enough.
 Mine:
 
-- **No punctuation.** 0.0 % of utterances contain a comma. Stock whisper-small
-  manages 63.3 %. Capitals: 2 % against 98 %. The cause is my training labels,
+- **No punctuation.** 0.0–0.7 % of utterances contain a comma, depending on mode.
+  Stock whisper-small manages 63.3 %. Capitals: 2 % against 98 %. The cause is my training labels,
   which were lowercased and unpunctuated — the fix is data I've already built
   and haven't yet run.
 - **English only.** Russian degrades 12.6×. But an fp16 control trained the same
